@@ -1,0 +1,175 @@
+camera:
+  type: "realsense_d435i"
+  serial: null
+  color_width: 1280
+  color_height: 720
+  fps: 30
+
+calibration:
+  aruco:
+    marker_length_m: 0.1
+    dict_id: 0
+    target_marker_id: 0
+  hand_eye_method: TSAI
+  hand_eye_compensation_m:
+    x: 0.00
+    y: 0.0
+    z: -0.031
+
+detection:
+  conf_threshold: 0.5
+  iou_threshold: 0.45
+
+robot:
+  repo_root: null
+  gripper:
+    dm:
+      angle_open: 5.0
+      counterclockwise: true
+      tau_max: 1.5
+      close_torque: 1.0
+      default_force: 0.30
+    rs:
+      angle_open: 4.71
+      max_open_angle_rad: 4.71
+      counterclockwise: false
+      tau_max: 1.5
+      close_torque: 1.5
+      default_force: 0.40
+  ready_pose:
+    x: 0.3
+    y: 0.0
+    z: 0.3
+    roll: 0.0
+    pitch: 0.7
+    duration: 3.0
+
+yolo:
+  model_name: "yoloe-26l-seg.pt"
+  device: "cuda:0"
+  use_world: true
+  custom_classes:
+    - "yellow banana"
+    - "water bottle"
+    - "light blue coffee cup"
+    - "cup"
+    - "green object"
+    - "tool"
+    - "box"
+
+grasp_pipeline:
+  infer_every_live: 3
+  grasp:
+    depth_quantile: 0.5
+    pregrasp_offset_m: 0.080
+    insertion_depth_m: 0.025
+    min_base_z_m: -0.01
+
+graspnet:
+  checkpoint: "checkpoint-rs.tar"
+  num_point: 20000
+  collision_thresh: 0.03
+  min_depth: 0.05
+  max_depth: 1.0
+  top_k: 50
+  target_class: null
+  target_margin_px: 12
+  target_expand_ratio: 1.35
+
+# VLM 目标选择。用于第一、二阶段预览，不控制机械臂。
+vlm:
+  # 1pkapi 的兼容 chat-completions 接口；不能填写 /dashboard 控制台地址。
+  base_url: "https://1pkapi.com/v1"
+  model: "gpt-6.1-sol"
+  # 优先读取环境变量；未设置时读取下方本地密钥文件。
+  api_key_env: "VLM_API_KEY"
+  # 相对项目根目录；真实密钥文件已加入 Git 忽略规则，不要提交。
+  api_key_file: "config/vlm_api_key.local"
+  # 图像理解请求偶尔会超过 16 秒；实机夹持复查允许等待更久，避免误报网络失败。
+  timeout_s: 25
+  # 同轮返回抓取目标和放置目标，预留完整 JSON 输出空间。
+  max_tokens: 1024
+  temperature: 0.1
+  max_image_side: 1280
+  # 使用双轴 0~1000 归一化坐标，程序按实际宽、高分别换算回原图。
+  # 也支持 pixel；不要把归一化坐标直接当作像素坐标。
+  coordinate_space: "normalized_1000"
+
+# 第二阶段：VLM 框 -> SAM 原图掩码 -> GraspNet 目标候选。
+sam:
+  checkpoint: "models/sam_b.pt"
+  device: "cuda:0"
+  min_mask_area_px: 64
+
+vlm_grasp:
+  # Stage 2 Open3D：width=显示 GraspNet 解码后的全部原始候选；best=只显示最终最佳位姿。
+  open3d_grasps: "best"
+  # 将 RGB 标注、合并掩码、抓取点云和放置几何放在同一个 2×2 窗口中。
+  dashboard:
+    enabled: true
+    # 每格尺寸相同；整个窗口为 1280×720。
+    tile_width: 640
+    tile_height: 360
+    # 左下角以抓取中心为基准的最小半径；有容器时自动扩展范围并保留容器深度点。
+    grasp_cloud_focus_radius_m: 0.12
+  # 给 GraspNet 保留目标周围点云；最终候选仍严格通过 SAM 掩码筛选。
+  context_expand_ratio: 1.35
+  # 候选抓取中心与掩码对应深度的最大差值，单位米。
+  depth_tolerance_m: 0.04
+  min_target_points: 32
+  # 与现有抓取脚本夹爪最大开口一致。
+  max_grasp_width_m: 0.09
+  # 仅做容器几何和模拟放置预览，不连接或控制机械臂。
+  placement_preview:
+    enabled: true
+    # 容器底面和抓取物体至少需要的有效深度点数。
+    min_points: 96
+    # 对敞口容器优先保留较深的内部区域；深度分层不明显时自动退回收缩掩码。
+    interior_depth_quantile: 0.50
+    min_depth_span_m: 0.018
+    # 容器底面 RANSAC 内点距离阈值。
+    plane_distance_threshold_m: 0.008
+    # 盒底法线相对同帧桌面法线允许的最大偏差，防止横放盒子时误选侧壁。
+    floor_normal_tolerance_deg: 25.0
+    # 物体轮廓与容器内壁要求保留的最小单侧距离（0.4 cm）。
+    wall_clearance_m: 0.004
+    # 完整容器投影的诊断值两端各忽略 0.5%；不直接用于放置。
+    container_xy_trim_quantile: 0.005
+    # 四侧盒缘可信时向内收缩边缘，作为盒缘/盒底融合放置区域；不可信时退回可见盒底。
+    rim_inset_m: 0.006
+    # 物体平面投影两端各忽略 0.5%，抑制透明物体的少量错误深度点。
+    object_xy_trim_quantile: 0.005
+    # 仅控制三维预览离底面的显示距离，不参与能否放入的判断。
+    object_bottom_clearance_m: 0.005
+    # 绕容器法线搜索放置角度的步长；1°可避免细长物体在临界尺寸下漏掉可行角度。
+    yaw_step_deg: 1.0
+    morph_kernel_px: 7
+    max_visual_points: 12000
+
+# VLM 实机流程：scripts/vlm_grasp_robot.py。
+# 候选接近方向先与 ready 位快照估计出的桌面法线比较，再进行 IK。
+vlm_robot:
+  # 实机及 dry-run 期间持续录制腕部相机原始 RGB；false 时不启动录像线程。
+  record_video: true
+  # 张爪等待时间；超时后撤销开爪驱动并停止本轮。
+  gripper_open_timeout_s: 3.0
+  # 放置后检查反馈角度至少向张开方向移动这么多。
+  release_min_open_motion_rad: 0.5
+  # 0°=从桌面上方接近，90°=侧向；反向（从桌面下方）也会被拒绝。
+  max_approach_tilt_deg: 40.0
+  # 香蕉候选中心至少离掩码边缘 6 mm；仅作用于实机候选，不改变原始 GraspNet 输出。
+  banana_min_mask_clearance_m: 0.006
+  # 香蕉沿掩码长轴两端各排除 15%；剩余候选优先靠近中部且远离侧边。
+  banana_end_fraction: 0.15
+  # 抓取 TCP 相对 ready 姿态的最大旋转；拦截从后侧绕腕大幅反转的候选。
+  max_ready_rotation_deg: 90.0
+  # 抬高复查容器后，物体在规划盒底位置上方多高处松开。
+  place_release_clearance_m: 0.08
+  # pre-place 相对 release 沿容器开口法线再后退的距离。
+  place_approach_offset_m: 0.08
+  # 按容器余量排序后，最多检查多少个 XY/Yaw 可放入方案；避免只因最佳余量角度 IK 不可达而误拒绝。
+  place_ik_yaw_max_candidates: 181
+  pregrasp_duration_s: 2.0
+  grasp_duration_s: 1.5
+  retreat_duration_s: 1.5
+  place_duration_s: 2.0
